@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tasks</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<main>
+  <h1>Tasks</h1>
+  <p class="sub">Everything you add here is saved in the database.</p>
+
+  <form id="taskForm">
+    <input id="title" placeholder="What needs to be done?" maxlength="200" required>
+    <textarea id="description" placeholder="Details (optional)" maxlength="1000"></textarea>
+    <button class="primary" type="submit">Add task</button>
+  </form>
+
+  <div id="status" role="alert"></div>
+  <ul id="list"></ul>
+</main>
+
+<script src="/static/script.js" defer></script>
+</body>
+</html>

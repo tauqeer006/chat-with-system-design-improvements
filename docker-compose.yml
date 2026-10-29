@@ -1,0 +1,163 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: task_db
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+      POSTGRES_DB: appdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: task_redis
+    # cache only: no disk persistence, capped memory, evict least-recently-used keys when full
+    command: ["redis-server",
+              "--appendonly", "yes",
+              "--appendfsync", "everysec",
+              "--save", "60", "1",
+              "--maxmemory", "256mb",
+              "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  adminer:
+    image: adminer:4.8.1
+    container_name: task_adminer
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    depends_on:
+      - db
+
+  api:
+    build: .
+    container_name: task_api
+    environment:
+      DATABASE_URL: postgresql://appuser:apppass@db:5432/appdb
+      REDIS_URL: redis://redis:6379/0
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
+      CACHE_TTL: ${CACHE_TTL:-30}
+      WORKERS: "4"
+      DB_POOL_SIZE: "10"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_TIMEOUT: "30"
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Load generator: only starts when you use --profile loadtest
+  locust:
+    image: locustio/locust:2.32.0
+    container_name: task_locust
+    profiles: ["loadtest"]
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./loadtest:/mnt/locust
+    command: -f /mnt/locust/locustfile.py MixedUsers --host http://nginx
+    depends_on:
+      - nginx
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: task_nginx
+    ports:
+      - "80:80"                      # browser talks to this
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginxcache:/var/cache/nginx  # the "edge" cache storage
+    depends_on:
+      - api
+
+  chat:
+    build:
+      context: ./chat_service
+      dockerfile: Dockerfile
+    container_name: task_chat
+    environment:
+      REDIS_URL: redis://redis:6379/1
+      KAFKA_BOOTSTRAP: kafka:9092
+      WORKERS: "2"
+      HISTORY_LIMIT: "50"
+    ports:
+      - "8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  kafka:
+      image: apache/kafka:3.8.1
+      container_name: task_kafka
+      environment:
+        KAFKA_NODE_ID: 1
+        KAFKA_PROCESS_ROLES: broker,controller
+        KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+        KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        KAFKA_NUM_PARTITIONS: 3
+      volumes:
+        - kafkadata:/var/lib/kafka/data
+      healthcheck:
+        test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+        interval: 10s
+        timeout: 10s
+        retries: 10
+
+  chat_writer:
+    build: ./chat_service              # same folder and image as the chat service
+    container_name: task_chat_writer
+    command: ["python", "-m", "app.writer"]
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      DATABASE_URL: postgresql://appuser:apppass@db:5432/appdb
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  kafka-ui:
+      image: provectuslabs/kafka-ui:v0.7.2
+      container_name: task_kafka_ui
+      ports:
+        - "8082:8080"          # 8080 is already used by Adminer
+      environment:
+        KAFKA_CLUSTERS_0_NAME: local
+        KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      depends_on:
+        kafka:
+          condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  nginxcache:
+  kafkadata:

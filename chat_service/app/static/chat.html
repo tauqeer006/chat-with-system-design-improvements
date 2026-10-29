@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <style>
+    body { font-family: sans-serif; max-width: 520px; margin: 30px auto; padding: 0 10px; }
+    #log { border: 1px solid #ccc; height: 380px; overflow-y: auto; padding: 8px; border-radius: 6px; }
+    .msg { margin: 5px 0; }
+    .me { text-align: right; color: #0a58ca; }
+    .sys { color: #888; font-size: 12px; text-align: center; }
+    .time { color: #999; font-size: 11px; margin-left: 6px; }
+    #row { display: flex; gap: 6px; margin-top: 8px; }
+    #text { flex: 1; padding: 8px; }
+    button { padding: 8px 14px; }
+  </style>
+</head>
+<body>
+  <h3>Room: <span id="roomName"></span> &middot; You: <span id="who"></span></h3>
+  <div id="log"></div>
+  <div id="row">
+    <input id="text" placeholder="Type a message..." autofocus>
+    <button id="send">Send</button>
+  </div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const room = params.get("room") || "general";
+  const name = params.get("name") || prompt("Your name?") || "Anon" + Math.floor(Math.random() * 100);
+  document.getElementById("roomName").textContent = room;
+  document.getElementById("who").textContent = name;
+
+  const log = document.getElementById("log");
+  const input = document.getElementById("text");
+  let ws;
+
+  function addLine(cls, text, ts) {
+    const div = document.createElement("div");
+    div.className = "msg " + cls;
+    div.textContent = text;                       // textContent avoids XSS
+    if (ts) {
+      const t = document.createElement("span");
+      t.className = "time";
+      t.textContent = new Date(ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+      div.appendChild(t);
+    }
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function show(m) {
+    addLine(m.name === name ? "me" : "", `${m.name}: ${m.text}`, m.ts);
+  }
+
+  async function loadHistory() {
+    try {
+      const r = await fetch(`/api/chat/${encodeURIComponent(room)}/history`);
+      (await r.json()).forEach(show);
+    } catch (e) { addLine("sys", "could not load history"); }
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws/chat/${encodeURIComponent(room)}?name=${encodeURIComponent(name)}`);
+    ws.onopen    = () => addLine("sys", "connected");
+    ws.onmessage = (e) => show(JSON.parse(e.data));
+    ws.onclose   = () => { addLine("sys", "disconnected, retrying..."); setTimeout(connect, 2000); };
+  }
+
+  function send() {
+    const t = input.value.trim();
+    if (t && ws && ws.readyState === WebSocket.OPEN) { ws.send(t); input.value = ""; }
+  }
+  document.getElementById("send").onclick = send;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+
+  loadHistory().then(connect);
+</script>
+</body>
+</html>
